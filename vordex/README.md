@@ -4,6 +4,7 @@ Options exchange
 
 Setup
 ```shell
+# Need to install foundry / forge
 forge install --no-git OpenZeppelin/openzeppelin-contracts --no-commit
 forge install Uniswap/v3-periphery --no-git --no-commit               
 forge install Uniswap/v3-core --no-git --no-commit

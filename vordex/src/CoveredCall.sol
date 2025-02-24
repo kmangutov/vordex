@@ -1,26 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-// import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
-// import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
-// import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-// import "@openzeppelin/contracts/utils/math/SafeMath.sol";
-
-
 interface IERC20 {
     function totalSupply() external view returns (uint256);
     function balanceOf(address account) external view returns (uint256);
-    function transfer(address recipient, uint256 amount)
-        external
-        returns (bool);
-    function allowance(address owner, address spender)
-        external
-        view
-        returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
     function approve(address spender, uint256 amount) external returns (bool);
-    function transferFrom(address sender, address recipient, uint256 amount)
-        external
-        returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
 }
 
 interface IWETH is IERC20 {
@@ -29,8 +16,6 @@ interface IWETH is IERC20 {
 }
 
 contract CoveredCall {
-    // using SafeMath for uint256;
-
     address public seller; 
     address public buyer;
     address public weth;
@@ -42,6 +27,7 @@ contract CoveredCall {
     bool public optionSold;
     bool public optionExercised;
     uint256 public escrowAmount;
+    address public token; // For handling different tokens like WETH, DAI, USDC
 
     // Events for logging
     event OptionPurchased(address indexed buyer);
@@ -54,7 +40,8 @@ contract CoveredCall {
         address _uniswapRouter,
         uint256 _strikePrice,
         uint256 _expiration,
-        uint256 _premium
+        uint256 _premium,
+        address _token
     ) {
         seller = msg.sender;
         weth = _weth;
@@ -63,13 +50,14 @@ contract CoveredCall {
         strikePrice = _strikePrice;
         expiration = _expiration;
         premium = _premium;
+        token = _token;
     }
 
     function buyOption() external {
         require(block.timestamp < expiration, "Option expired");
         require(!optionSold, "Option already sold");
-        
-        IERC20(dai).transferFrom(msg.sender, address(this), premium);
+
+        IERC20(token).transferFrom(msg.sender, address(this), premium);
         buyer = msg.sender;
         optionSold = true;
 
@@ -84,14 +72,7 @@ contract CoveredCall {
         require(getCurrentPrice() >= strikePrice, "Option is not ITM");
 
         uint256 amountToSell = escrowAmount;
-        IWETH(weth).withdraw(amountToSell);
-        
-        // Swap WETH for DAI on Uniswap
-        IERC20(weth).approve(uniswapRouter, amountToSell);
-        // Call Uniswap swap function to sell WETH for DAI
-        
-        // Send the DAI proceeds to the buyer
-        // Assuming the swap on Uniswap has been successful and returned DAI
+        IERC20(token).transfer(buyer, amountToSell);
 
         optionExercised = true;
 
@@ -104,9 +85,7 @@ contract CoveredCall {
         require(!optionExercised, "Option already exercised");
 
         uint256 amountToReclaim = escrowAmount;
-        IWETH(weth).withdraw(amountToReclaim);
-        
-        payable(seller).transfer(amountToReclaim);
+        IERC20(token).transfer(seller, amountToReclaim);
 
         emit OptionExpired(seller);
     }
@@ -116,10 +95,10 @@ contract CoveredCall {
         return 60; // Example value
     }
 
-    function escrowWETH(uint256 amount) external {
+    function escrowTokens(uint256 amount) external {
         require(msg.sender == seller, "Only seller can escrow");
         escrowAmount = amount;
-        IWETH(weth).deposit{value: amount}();
+        IERC20(token).transferFrom(seller, address(this), amount);
     }
 
     receive() external payable {}

@@ -1,0 +1,111 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.13;
+
+import {Test, console} from "forge-std/Test.sol";
+import {CoveredCall} from "../src/CoveredCall.sol";
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+}
+
+interface IWETH is IERC20 {
+    function deposit() external payable;
+    function withdraw(uint256 amount) external;
+}
+
+address constant SWAP_ROUTER_02 = 0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45;
+address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+address constant DAI = 0x6B175474E89094C44Da98b954EedeAC495271d0F;
+
+contract CoveredCallTest is Test {
+    CoveredCall public coveredCall;
+    address public weth = address(WETH);
+    address public dai = address(DAI);
+    address public uniswapRouter = address(SWAP_ROUTER_02);
+    
+    address public seller = vm.addr(1);
+    address public buyer = vm.addr(2); //address(0x1234567890AbcdEF1234567890aBcdef12345678);
+    
+    uint256 public strikePrice = 1000;
+    uint256 public expiration = block.timestamp + 1 weeks;
+    uint256 public premium = 50;
+    uint256 public escrowAmount = 1000; // Amount to escrow for the option
+
+    function setUp() public {
+        console.log("Seller address:", seller);
+        
+        // Fund seller with WETH (escrowAmount)
+        deal(WETH, seller, escrowAmount * 2); // Set the seller's WETH balance for escrow
+        console.log("Seller WETH balance:", IERC20(WETH).balanceOf(seller));
+        
+        // Log contract creation details
+        console.log("Creating CoveredCall contract...");
+        
+        vm.prank(seller);
+        coveredCall = new CoveredCall(weth, dai, uniswapRouter, strikePrice, expiration, premium, weth);
+
+        // Log before and after escrow
+        console.log("Escrowing WETH:", escrowAmount);
+        vm.prank(seller);
+        coveredCall.escrowTokens(escrowAmount); // Escrow the WETH to the contract
+
+        // Fund buyer with DAI
+        deal(DAI, buyer, premium); // Set the buyer's DAI balance
+        console.log("Buyer DAI balance:", IERC20(DAI).balanceOf(buyer));
+    }
+
+    // Test for buying an option
+    function test_BuyOption() public {
+        // Buyer approves the contract to transfer DAI
+        vm.prank(buyer);
+        IERC20(dai).approve(address(coveredCall), premium);
+
+        // Buyer buys the option
+        vm.prank(buyer);
+        coveredCall.buyOption();
+
+        // Assert the buyer and that the option is sold
+        assertEq(coveredCall.buyer(), buyer);
+        assertTrue(coveredCall.optionSold());
+    }
+
+    // Test for exercising an option
+    function test_ExerciseOption() public {
+        // Buyer approves the contract to transfer DAI
+        vm.prank(buyer);
+        IERC20(dai).approve(address(coveredCall), premium);
+
+        // Buyer buys the option
+        vm.prank(buyer);
+        coveredCall.buyOption();
+
+        // Simulate the current price being above the strike price
+        vm.mockCall(address(coveredCall), abi.encodeWithSignature("getCurrentPrice()"), abi.encode(strikePrice + 1));
+
+        // Buyer exercises the option
+        vm.prank(buyer);
+        coveredCall.exerciseOption();
+
+        // Assert the option is exercised
+        assertTrue(coveredCall.optionExercised());
+    }
+
+    // Test for expiring an option worthless
+    function test_ExpireWorthless() public {
+        // Seller already escrowed the WETH during setUp
+        // Wait for the option to expire
+        vm.warp(expiration + 1); // Move time past the expiration
+
+        // Seller attempts to expire the option
+        vm.prank(seller);
+        coveredCall.expireWorthless();
+
+        // Assert that the seller reclaimed the escrowed WETH
+        assertEq(IERC20(WETH).balanceOf(seller), escrowAmount * 2); // Seller should receive the WETH back
+    }
+}
