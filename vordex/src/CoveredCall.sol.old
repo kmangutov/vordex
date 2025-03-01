@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.26;
+
+import "./PriceFetcher.sol";
+import "./UniswapV3SingleHopSwap.sol";
+import "./IERC20.sol";
+
+contract CoveredCallEscrow {
+    address private constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+    address private constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+
+    PriceFetcher private immutable priceFetcher;
+    UniswapV3SingleHopSwap private immutable swapper;
+
+    enum State { Open, Locked, Exercised, Expired }
+
+    struct CoveredCall {
+        address seller;
+        address buyer;
+        uint256 strikePrice;
+        uint256 expiration;
+        uint256 premium; // USDC amount buyer deposits
+        uint256 escrowedAmount; // WETH amount seller deposits
+        State state;
+    }
+
+    mapping(uint256 => CoveredCall) public calls;
+    uint256 public callCount;
+
+    event CallCreated(uint256 indexed callId, address indexed seller, uint256 strikePrice, uint256 expiration);
+    event CallLocked(uint256 indexed callId, address indexed buyer, uint256 premium);
+    event CallExercised(uint256 indexed callId);
+    event CallExpired(uint256 indexed callId);
+
+    constructor(address _priceFetcher, address _swapper) {
+        priceFetcher = PriceFetcher(_priceFetcher);
+        swapper = UniswapV3SingleHopSwap(_swapper);
+    }
+
+    /**
+     * @notice Creates a new covered call option
+     * @param strikePrice The price in USDC at which the buyer can purchase WETH
+     * @param expiration Timestamp when the option expires
+     * @param escrowedAmount Amount of WETH seller is locking in the contract
+     */
+    function createCall(uint256 strikePrice, uint256 expiration, uint256 escrowedAmount) external returns (uint256) {
+        require(expiration > block.timestamp, "Expiration must be in the future");
+
+        IERC20(WETH).transferFrom(msg.sender, address(this), escrowedAmount);
+
+        uint256 callId = callCount++;
+        calls[callId] = CoveredCall({
+            seller: msg.sender,
+            buyer: address(0),
+            strikePrice: strikePrice,
+            expiration: expiration,
+            premium: 0,
+            escrowedAmount: escrowedAmount,
+            state: State.Open
+        });
+
+        emit CallCreated(callId, msg.sender, strikePrice, expiration);
+        return callId;
+    }
+
+    /**
+     * @notice Buyer deposits the premium to lock the call
+     * @param callId The ID of the covered call
+     * @param premiumAmount The amount of USDC buyer pays
+     */
+    function lockCall(uint256 callId, uint256 premiumAmount) external {
+        CoveredCall storage call = calls[callId];
+
+        require(call.state == State.Open, "Call is not open");
+        require(call.expiration > block.timestamp, "Call has expired");
+        require(call.buyer == address(0), "Already locked");
+
+        IERC20(USDC).transferFrom(msg.sender, address(this), premiumAmount);
+
+        call.buyer = msg.sender;
+        call.premium = premiumAmount;
+        call.state = State.Locked;
+
+        emit CallLocked(callId, msg.sender, premiumAmount);
+    }
+
+    /**
+     * @notice Buyer exercises the call option if it's ITM
+     * The escrowed WETH is swapped for USDC and sent to the buyer
+     * @param callId The ID of the covered call
+     */
+    function exercise(uint256 callId) external {
+        CoveredCall storage call = calls[callId];
+
+        require(call.state == State.Locked, "Call is not locked");
+        require(call.expiration > block.timestamp, "Call has expired");
+        require(call.buyer == msg.sender, "Only buyer can exercise");
+
+        uint256 currentPrice = priceFetcher.getETHPrice();
+        require(currentPrice >= call.strikePrice, "Not ITM");
+
+        // Swap WETH for USDC and send to the buyer
+        IERC20(WETH).approve(address(swapper), call.escrowedAmount);
+        swapper.swapExactInputSingleHop(call.escrowedAmount, 1);
+
+        IERC20(USDC).transfer(call.buyer, IERC20(USDC).balanceOf(address(this)));
+
+        call.state = State.Exercised;
+        emit CallExercised(callId);
+    }
+
+    /**
+     * @notice Seller retrieves the escrowed WETH and premium after expiration
+     * @param callId The ID of the covered call
+     */
+    function expire(uint256 callId) external {
+        CoveredCall storage call = calls[callId];
+
+        require(call.state == State.Locked, "Call is not locked");
+        require(call.expiration <= block.timestamp, "Not expired yet");
+
+        IERC20(WETH).transfer(call.seller, call.escrowedAmount);
+        IERC20(USDC).transfer(call.seller, call.premium);
+
+        call.state = State.Expired;
+        emit CallExpired(callId);
+    }
+}
