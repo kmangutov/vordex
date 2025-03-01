@@ -106,10 +106,12 @@ contract CoveredCallEscrow {
         require(call.buyer == msg.sender, "Only buyer can exercise");
 
         uint256 currentPrice = uint256(IChainlinkAggregator(CHAINLINK_FEED).latestAnswer());
-        require(currentPrice >= call.strikePrice, "Not ITM");
+        uint256 adjustedPrice = currentPrice / 1e2; // Convert from 8 decimals to 6 decimals
 
         console2.log("Exercising call - Buyer:", msg.sender);
-        console2.log("Current Price:", currentPrice, "Strike Price:", call.strikePrice);
+        console2.log("Current Price (scaled to 6 decimals):", adjustedPrice, "Strike Price:", call.strikePrice);
+
+        require(adjustedPrice >= call.strikePrice, "Not ITM");
 
         IERC20(WETH).approve(SWAP_ROUTER, call.escrowedAmount);
 
