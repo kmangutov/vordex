@@ -92,7 +92,8 @@ def extract_tx_hash(deploy_output):
 def send_tx(txn, private_key):
     """Signs and sends a transaction"""
     signed_txn = w3.eth.account.sign_transaction(txn, private_key)
-    tx_hash = w3.eth.send_raw_transaction(signed_txn.rawTransaction)
+    tx_hash = w3.eth.send_raw_transaction(signed_txn.raw_transaction)
+
     return w3.to_hex(tx_hash)
 
 # ---------------- Step 1: Start Anvil ----------------
